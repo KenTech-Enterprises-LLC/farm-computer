@@ -1,8 +1,6 @@
 import asyncio
 import datetime
-from gettext import gettext as _
 import time
-from typing import List
 
 import aiohttp
 import discord
@@ -12,7 +10,7 @@ import yaml
 
 from cogs import EXTENSIONS
 from utils import (
-    BotU as OldBotU,
+    BotU,
     Help,
     MentionableTree,
     handler,
@@ -60,20 +58,20 @@ else:
 #intents.message_content = True
 #intents.members = True
 
-class BotU(OldBotU):
-    blacklist: List
-    started_at: datetime.datetime
+# class BotU(OldBotU):
+#     blacklist: List
+#     started_at: datetime.datetime
 
-    async def check_blacklist(self, ctx):
-        if getattr(self, _('blacklist'), None):
-            if blacklist_obj := discord.utils.find(lambda x: x.offender_id == ctx.author.id, self.blacklist):
-                desc = _("You are currently blacklisted from using the bot. Please reach out to the bot developer on the support server for more information.")
-                if blacklist_obj.reason:
-                    desc += _("Reason: `{}`").format(blacklist_obj.reason)
-                emb = makeembed_failedaction(description=desc)
-                await ctx.reply(embed=emb, ephemeral=True, delete_after=10 if not ctx.interaction else None)
-                return False
-        return True
+#     async def check_blacklist(self, ctx):
+#         if getattr(self, _('blacklist'), None):
+#             if blacklist_obj := discord.utils.find(lambda x: x.offender_id == ctx.author.id, self.blacklist):
+#                 desc = _("You are currently blacklisted from using the bot. Please reach out to the bot developer on the support server for more information.")
+#                 if blacklist_obj.reason:
+#                     desc += _("Reason: `{}`").format(blacklist_obj.reason)
+#                 emb = makeembed_failedaction(description=desc)
+#                 await ctx.reply(embed=emb, ephemeral=True, delete_after=10 if not ctx.interaction else None)
+#                 return False
+#         return True
 
 
 bot = BotU(
