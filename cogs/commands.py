@@ -167,7 +167,13 @@ class CommandsCog(CogU, name='Farm Computer'):
         b = BeautifulSoup(r, 'html.parser')
 
 
-        for found in b.find("ul", {"class": "mw-allpages-chunk"}).find_all("li"):
+        chunks = b.find("ul", {"class": "mw-allpages-chunk"})
+        if chunks:
+            chunks = chunks.find_all("li")
+        else:
+            chunks = []
+        
+        for found in chunks:
             sites.append(found.find("a").get("href"))
 
         for next in b.find_all('a',{"title": "Special:AllPages"}):
