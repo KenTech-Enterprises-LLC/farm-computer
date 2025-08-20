@@ -14,11 +14,7 @@ from utils import (
     Help,
     MentionableTree,
     handler,
-    makeembed_failedaction,
 )
-
-intents = discord.Intents.default()
-intents.message_content = True
 
 env = environ.Env(
     PROD=(bool, False),
@@ -53,8 +49,10 @@ DEBUG: {DEBUG}
 
 if PROD:
     intents = discord.Intents.default()
+    intents.message_content = True
 else:
     intents = discord.Intents.all()
+
 #intents.message_content = True
 #intents.members = True
 

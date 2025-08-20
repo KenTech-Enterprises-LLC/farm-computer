@@ -143,25 +143,26 @@ class CommandsCog(CogU, name='Farm Computer'):
         logger_computer.info(f"Looked up {str(emb.title)[:str(emb.title).find('-')-1]} for {ctx.author} in {end-start} seconds.")
 
     async def getallpages(self, sites: list=[], prev=None, first_iteration: bool=True):
-        print('running')
+        logger_computer.debug('running')
         r = None
-        if prev in self.prevs: return None
+        if prev in self.prevs: 
+            return None
         
         if first_iteration:
             r = await self.session.get('https://stardewvalleywiki.com/Special:AllPages?from=&to=z&namespace=0&hideredirects=1')
         else:
             r = await self.session.get(prev)
         
-        print('responded')
+        logger_computer.debug('responded')
 
         r = await r.text()
 
         if prev:
-            print("more data after this")
+            logger_computer.debug("more data after this")
         elif first_iteration:
-            print("first iteration")
+            logger_computer.debug("first iteration")
         else:
-            print("reached last page")
+            logger_computer.debug("reached last page")
 
         b = BeautifulSoup(r, 'html.parser')
 
@@ -220,13 +221,13 @@ class CommandsCog(CogU, name='Farm Computer'):
             url = f"https://stardewvalleywiki.com/{query}"
             r = await self.session.get(url)
             if r.status > 350:
-                # print(r.status)
+                # logger_computer.debug(r.status)
                 raise Exception()
             status = r.status
             full_href = str(r._real_url)
             soup = bs4.BeautifulSoup(await r.text(), "html.parser")
         except Exception:
-            # print(r.status)
+            # logger_computer.debug(r.status)
             url = f"https://stardewvalleywiki.com/mediawiki/index.php?search={encoded}"
 
             res = await self.session.get(url)

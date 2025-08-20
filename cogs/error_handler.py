@@ -445,7 +445,7 @@ class ErrorHandler(CogU, hidden=True):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        self.error_forum = await self.bot.getorfetch_forum(ERROR_FORUM, await self.bot.getorfetch_guild(TESTING_GUILD))
+        self.error_forum = await self.bot.get_or_fetch_forum(ERROR_FORUM, await self.bot.get_or_fetch_guild(TESTING_GUILD))
 
     # @commands.Cog.listener()
     # async def on_command_error(self, ctx: ContextU, error: Union[commands.CommandError, Exception]):
