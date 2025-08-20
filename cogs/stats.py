@@ -66,7 +66,7 @@ from utils import (
     makeembed,
     makeembed_bot,
     makeembed_failedaction,
-    misc_flags_descriptions,
+    misc_flag_descriptions,
     oauth_url,
 )
 
@@ -1324,11 +1324,11 @@ class Stats(CogU, name="Statistics", hidden=True):
         if badges:
             e.add_field(name="Badges", value=' '.join(badges))
 
-        remaining_flags = (set_flags - subset_flags) & misc_flags_descriptions.keys()
+        remaining_flags = (set_flags - subset_flags) & misc_flag_descriptions.keys()
         if remaining_flags:
             e.add_field(
                 name='Public Flags',
-                value='\n'.join(misc_flags_descriptions[flag] for flag in remaining_flags),
+                value='\n'.join(misc_flag_descriptions[flag] for flag in remaining_flags),
                 inline=False,
             )
 
