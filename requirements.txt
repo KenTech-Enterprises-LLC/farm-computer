@@ -5,6 +5,9 @@ BeautifulSoup4
 colorama
 discord.py @ git+https://github.com/Rapptz/discord.py
 jishaku
+psutil
 python-environ
+pygit2==1.14.1
+dateparser
 PyYAML==6.0.1
 tortoise-orm
