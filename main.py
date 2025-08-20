@@ -49,7 +49,7 @@ DEBUG: {DEBUG}
 
 if PROD:
     intents = discord.Intents.default()
-    intents.message_content = True
+    #intents.message_content = True
 else:
     intents = discord.Intents.all()
 
