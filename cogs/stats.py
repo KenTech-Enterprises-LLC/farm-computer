@@ -17,6 +17,7 @@ import csv
 import datetime
 import gc
 from gettext import gettext as _
+from importlib import metadata
 import io
 import itertools
 import json
@@ -32,16 +33,15 @@ import asyncpg
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import pkg_resources
 import psutil
 import pygit2
 from tortoise import Tortoise
 from tortoise.functions import Count
 from typing_extensions import Annotated
 
-from cogs.models import Blacklist, Commands
+from cogs.models import Blacklist, Commands, DiscordGuilds
 from cogs.translations import get_translation_callable, intcomma
-from main import currentdate
+from main import PROD, currentdate
 from utils import (
     BotU,
     CogU,
@@ -66,6 +66,7 @@ from utils import (
     makeembed,
     makeembed_bot,
     makeembed_failedaction,
+    makeembed_successfulaction,
     misc_flag_descriptions,
     oauth_url,
 )
@@ -73,7 +74,7 @@ from utils import (
 log = logging.getLogger(__name__)
 #log.addHandler(handler) # we add this handler twice?
 
-LOGGING_CHANNEL = 1277467073810923561
+LOGGING_CHANNEL = 1246282926421708822
 
 badges_to_emoji = {
     'partner': emojidict.get('partner'),
@@ -88,6 +89,12 @@ badges_to_emoji = {
     'staff': emojidict.get('staff'),
     'discord_certified_moderator': emojidict.get('discord_certified_moderator'),
     'active_developer': emojidict.get('active_developer'),
+
+    # Verified Bot
+    # HTTP Interactions Bot
+    # System User
+    # Application Team User
+    # Spammer
 }
 
 class DataBatchEntry(TypedDict):
@@ -128,6 +135,18 @@ def censor_invite(obj: Any, *, _regex=_INVITE_REGEX) -> str:
 
 def hex_value(arg: str) -> int:
     return int(arg, base=16)
+
+def plural(n: int, plural_name: str='s') -> str:
+    """Returns 's' if the number is not 1, otherwise returns ''.
+
+    Args:
+        n (int): Number of items.
+        plural_name (str): What to reutrn if n != 1. Defaults to 's'.
+
+    Returns:
+        str: plural_name if n != 1, otherwise ''.
+    """
+    return plural_name if n != 1 else ''
 
 def object_at(addr: int) -> Optional[Any]:
     for o in gc.get_objects():
@@ -177,10 +196,10 @@ class Stats(CogU, name="Statistics", hidden=True):
         #         log.info('Registered %s commands to the database.', total)
         #     self._data_batch.clear()
         if self._data_batch:
-            await Commands.bulk_insert(self._data_batch) # type: ignore
+            actually_inserted = await Commands.bulk_insert(self._data_batch) # type: ignore
             total = len(self._data_batch)
             if total > 1:
-                log.info('Registered %s commands to the database.', total)
+                log.info(f'Registered {total} commands to the database ({total-len(actually_inserted)} ignored due to conflicts)', total)
             self._data_batch.clear()
         else:
             log.debug('No commands to insert.')
@@ -234,21 +253,27 @@ class Stats(CogU, name="Statistics", hidden=True):
         for key, value in ctx.kwargs.items():
             try:
                 #if isinstance(value, (PlatformV2, Platform)):
-                if value.__class__.__name__ == "Platform":
-                    value = value.route
+                if hasattr(value, 'slug'):
+                    value = value.slug
+                if value.__class__.__name__ == "StatsType":
+                    value = str(value)
                 else:
                     json.dumps(value) # ensure it's json serializable
                 kwargs[key] = value
             except TypeError:
-                if isinstance(value, (PlatformV2, Platform)):
-                    kwargs[key] = value.route
+                #if isinstance(value, (PlatformV2, Platform)):
+                if hasattr(value, 'slug'):
+                    kwargs[key] = value.slug
                 continue
     
         for entry in ctx.args:            
             try:
                 #if isinstance(value, (PlatformV2, Platform)):
-                if entry.__class__.__name__ == "Platform":
-                    entry = entry.route
+                if hasattr(entry, 'slug'):
+                    entry = entry.slug
+                if entry.__class__.__name__ == "StatsType":
+                    entry = str(entry)
+                
                 json.dumps(entry) # ensure it's json serializable
                 args.append(entry)
             except TypeError:
@@ -393,10 +418,15 @@ class Stats(CogU, name="Statistics", hidden=True):
             st = danny_time.human_timedelta(self.uptime, accuracy=None, brief=True, suffix=False)
             desc = f"Bot has been up for `{st}`."
         
-        appinfo = await self.bot.application_info()
-        
-        embed = makeembed_bot(title='Bot is ready!', description=desc, color=discord.Colour.blurple(), footer="Bot started", bot=self.bot, app_info=appinfo, timestamp=self.uptime)
-        await self.webhook.send(embed=embed)
+        #appinfo = await self.bot.application_info()
+
+        if PROD:
+            color = discord.Colour.blurple()
+        else:
+            color = discord.Colour.purple()
+
+        embed = makeembed_bot(title='Bot is ready!', description=desc, color=color, footer="Bot started", footer_icon_url=self.bot.user.display_avatar.url, timestamp=self.uptime)
+        await self.webhook.send(embed=embed, avatar_url=self.bot.user.display_avatar.url)#username=self.bot.user.name, avatar_url=self.bot.user.display_avatar.url)
 
     async def on_shard_resumed(self, shard_id: int):
         log.info('Shard ID %s has resumed...', shard_id)
@@ -478,7 +508,7 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         if not hasattr(self, 'uptime'):
             return await ctx.reply(embed=makeembed_failedaction(description='Bot has not connected to the gateway yet.'), delete_after=10, ephemeral=True)
-        await ctx.reply(f'Bot has been up since {dctimestamp(self.uptime,"R")}.', ephemeral=True)
+        await ctx.reply(embed=makeembed_successfulaction(description=f'Bot has been up since {dctimestamp(self.uptime,"R")}.', footer="Bot started", timestamp=self.uptime, ephemeral=True))
         #await ctx.reply(f'Uptime: **{self.get_bot_uptime()}** (since {dctimestamp(self.uptime,"R")})')
 
     def format_commit(self, commit: pygit2.Commit) -> str:
@@ -489,13 +519,24 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         # [`hash`](url) message (offset)
         offset = danny_time.format_relative(commit_time.astimezone(datetime.timezone.utc))
+        return f"`{short_sha2}` {short} ({offset})"
+
+    def format_commit_owner(self, commit: pygit2.Commit) -> str:
+        short, _, _ = commit.message.partition('\n')
+        short_sha2 = commit.hex[0:6]
+        commit_tz = datetime.timezone(datetime.timedelta(minutes=commit.commit_time_offset))
+        commit_time = datetime.datetime.fromtimestamp(commit.commit_time).astimezone(commit_tz)
+
+        # [`hash`](url) message (offset)
+        offset = danny_time.format_relative(commit_time.astimezone(datetime.timezone.utc))
         return f"{dchyperlink(f'{GITHUB_URL}/commit/{commit.hex}',f'`{short_sha2}`', )} {short} ({offset})"
         #return f'[`{short_sha2}`](https://github.com/Rapptz/RoboDanny/commit/{commit.hex}) {short} ({offset})'
 
-    def get_last_commits(self, count=3):
+    def get_last_commits(self, count=3, is_owner: bool=False):
         repo = pygit2.Repository('.git')
         commits = list(itertools.islice(repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL), count))
-        return '\n'.join(self.format_commit(c) for c in commits)
+        format_method = self.format_commit_owner if is_owner else self.format_commit
+        return '\n'.join(format_method(c) for c in commits)
 
     @hybrid_command(name=_('about'), description=_('Tells you information about the bot itself.'))
     @app_commands.allowed_installs(guilds=True, users=True)
@@ -507,9 +548,9 @@ class Stats(CogU, name="Statistics", hidden=True):
         __ = await get_translation_callable(ctx.interaction)
 
         if not hasattr(self, 'uptime'):
-            return await ctx.reply(embed=makeembed_failedaction(description='Bot has not connected to the gateway yet.'),ephemeral=True, delete_after=10)
+            return await ctx.reply(embed=makeembed_failedaction(description=await __('Bot has not connected to the gateway yet.')),ephemeral=True, delete_after=10)
 
-        revision = self.get_last_commits()
+        revision = self.get_last_commits(is_owner=await self.bot.is_owner(ctx.author))
         #embed = makeembed_bot(description='Latest Changes:' + revision, footer_icon_url=self.bot.user.display_avatar.url)
         #embed.title = 'Official Bot Server Invite'
         #embed.url = f'{SUPPORT_SERVER}'
@@ -519,12 +560,18 @@ class Stats(CogU, name="Statistics", hidden=True):
             owner = discord.utils.find(lambda m: m.name == 'aidenpearce3066', self.bot.team.members)
             if not owner:
                 owner = self.bot.owner
+        elif self.bot.owner_ids and len(self.bot.owner_ids) > 1:
+            owner_id = discord.utils.find(lambda m: m == 458657458995462154, self.bot.owner_ids)
+            if owner_id:
+                owner = await self.bot.get_or_fetch_user(owner_id, None)
+            else:
+                owner = self.bot.owner
         else:
             owner = self.bot.owner
 
         embed = makeembed_bot(
-            title="Official Bot Server Invite", 
-            description=('Latest Changes:\n') + revision, 
+            title=await __("Official Bot Server Invite"), 
+            description=(await __('Latest Changes:\n')) + revision, 
             url=str(SUPPORT_SERVER), 
             color=discord.Colour.blurple(),
             author=str(owner),
@@ -551,28 +598,34 @@ class Stats(CogU, name="Statistics", hidden=True):
                 elif isinstance(channel, discord.VoiceChannel):
                     voice += 1
 
-        embed.add_field(name='Members', value="`{}` total\n`{}` unique".format(intcomma(total_members), intcomma(total_unique)))
-        embed.add_field(name='Channels', value="`{}` total\n`{}` text\n`{}` voice".format(intcomma(text + voice), intcomma(text), intcomma(voice)))
+        embed.add_field(name=await __('Members'), value="`{}` total\n`{}` unique".format(intcomma(total_members), intcomma(total_unique)))
+        embed.add_field(name=await __('Channels'), value="`{}` total\n`{}` text\n`{}` voice".format(intcomma(text + voice), intcomma(text), intcomma(voice)))
 
         memory_usage = self.process.memory_full_info().uss / 1024**2
-        cpu_usage = self.process.cpu_percent() / psutil.cpu_count()
-        embed.add_field(name='Process', value=f'`{memory_usage:.2f}` MiB\n`{cpu_usage:.2f}`% CPU')
- 
-        version = pkg_resources.get_distribution('discord.py').version
-        embed.add_field(name='Guilds', value=f"`{intcomma(guilds)}`")
-        embed.add_field(name='Commands Run', value=f"`{intcomma(sum(self.bot.command_stats.values()))}`")
-        embed.add_field(name='Uptime', value=self.get_bot_uptime(brief=True))
+        cpu_count = psutil.cpu_count()
+        assert cpu_count  # valid here
+
+        cpu_usage = self.process.cpu_percent() / cpu_count
+
+        embed.add_field(name=await __('Process'), value=f'`{memory_usage:.2f}` MiB\n`{cpu_usage:.2f}`% CPU')
+
+        # version = pkg_resources.get_distribution('discord.py').version
+        version = metadata.version('discord.py')
+        
+        embed.add_field(name=await __('Guilds'), value=f"`{intcomma(guilds)}`")
+        embed.add_field(name=await __('Commands Run'), value=f"`{intcomma(sum(self.bot.command_stats.values()))}`")
+        embed.add_field(name=await __('Uptime'), value=self.get_bot_uptime(brief=True))
 
         #embed.add_field(name=_('Support Server'), value="[Click]({SUPPORT_SERVER})"
         #embed.add_field(name=_("Trello Board"), value=dchyperlink("https://trello.com/b/RnEMKuA6/rainbow-six-stats", _("Click here!")))
 
-        embed.set_footer(text="Made with discord.py v{}".format(version), icon_url='http://i.imgur.com/5BFecvA.png')
+        embed.set_footer(text=(await __("Made with discord.py v{}")).format(version), icon_url='http://i.imgur.com/5BFecvA.png')
 
         view = discord.ui.View()
 
         view.add_item(
             discord.ui.Button(
-                label="Install (Server)",
+                label=await __("Install (Server)"),
                 style=discord.ButtonStyle.link,
                 url=oauth_url(self.bot.user.id, permissions=discord.Permissions(415068712000), scopes=['bot', 'applications.commands']),
             )
@@ -580,7 +633,7 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         view.add_item(
             discord.ui.Button(
-                label="Install (User)",
+                label=await __("Install (User)"),
                 style=discord.ButtonStyle.link,
                 url=oauth_url(self.bot.user.id, scopes=['applications.commands',], integration_type=1),
             )
@@ -588,13 +641,30 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         view.add_item(
             discord.ui.Button(
-                label="Support Server",
+                label=await __("Support Server"),
                 style=discord.ButtonStyle.link,
                 url=str(SUPPORT_SERVER),
             )
         )
 
+        # view.add_item(
+        #     discord.ui.Button(
+        #         label=await __("Trello Board"),
+        #         style=discord.ButtonStyle.link,
+        #         url="https://trello.com/b/RnEMKuA6/rainbow-six-stats",
+        #     )
+        # )
+
         await ctx.reply(embed=embed, view=view)
+
+    # @hybrid_command(name=_("botstats"), description=_("Gives statistics about the bot."))
+    # @app_commands.allowed_installs(guilds=True, users=True)
+    # @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    # async def botstats(self, ctx: ContextU):
+    #     await ctx.defer()
+
+    #     # different stats for sharding or just one shard
+    #     if self.bot.shard_count > 1:
 
     async def censor_object(self, obj: str | discord.abc.Snowflake) -> str:
         if not isinstance(obj, str) and await Blacklist.is_blacklisted(obj.id):
@@ -694,7 +764,7 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         command_mentions = [f"{await self.get_command_mention(command)}" for command, _ in results]
         value = (
-            '\n'.join(_("{}: {} (`{}` use{})").format(lookup[index], command_mentions[index], intcomma(uses), plural(uses)) for (index, (command, uses)) in enumerate(results))
+            '\n'.join(_("{}: {} (`{}` uses)").format(lookup[index], command_mentions[index], intcomma(uses)) for (index, (command, uses)) in enumerate(results))
             or _('No Commands.')
         )
         embed.add_field(name=await __('Top Commands Today'), value=value, inline=True)
@@ -763,7 +833,7 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         value = (
             '\n'.join(
-                _("{}: <@{}> (`{}` bot use{})").format(lookup[index], author_id, intcomma(uses), plural(uses)) for (index, (author_id, uses)) in enumerate(results)
+                _("{}: <@{}> (`{}` bot uses)").format(lookup[index], author_id, intcomma(uses)) for (index, (author_id, uses)) in enumerate(results)
             )
             or _('No command users.')
         )
@@ -998,7 +1068,7 @@ class Stats(CogU, name="Statistics", hidden=True):
                 guild = await __("User-installed Application (Unknown Server)")
             else:
                 try:
-                    g = await self.bot.getorfetch_guild(guild_id)
+                    g = await self.bot.get_or_fetch_guild(guild_id)
                     guild = f"`{await self.censor_object(g)}`"
                 except discord.NotFound:
                     guild = f"<Unknown {guild_id}>"
@@ -1041,14 +1111,14 @@ class Stats(CogU, name="Statistics", hidden=True):
         for (index, (author_id, uses, guild_id)) in enumerate(results):
             if guild_id:
                 try:
-                    g = await self.bot.getorfetch_guild(guild_id)
+                    g = await self.bot.get_or_fetch_guild(guild_id)
                 except discord.NotFound:
                     g = None
             else:
                 g = None
             
             try:
-                u = await self.bot.getorfetch_user(author_id, g)
+                u = await self.bot.get_or_fetch_user(author_id, g)
                 user = f"@{u} ({u.mention})"
             except discord.NotFound:
                 user = f'<Unknown {author_id}>'
@@ -1204,7 +1274,7 @@ class Stats(CogU, name="Statistics", hidden=True):
                 guild = await __("User-installed Application (Unknown Server)")
             else:
                 try:
-                    g = await self.bot.getorfetch_guild(guild_id)
+                    g = await self.bot.get_or_fetch_guild(guild_id)
                     guild = f"`{await self.censor_object(g)}`"
                 except discord.NotFound:
                     guild = f"<Unknown {guild_id}>"
@@ -1247,12 +1317,12 @@ class Stats(CogU, name="Statistics", hidden=True):
         value = []
         for (index, (author_id, uses, guild_id)) in enumerate(results):
             try:
-                g = await self.bot.getorfetch_guild(guild_id)
+                g = await self.bot.get_or_fetch_guild(guild_id)
             except discord.NotFound:
                 g = None
 
             try:
-                u = await self.bot.getorfetch_user(author_id, g)
+                u = await self.bot.get_or_fetch_user(author_id, g)
                 user = f"@{u} ({u.mention})"
             except discord.NotFound:
                 user = f'<Unknown {author_id}>'
@@ -1263,30 +1333,90 @@ class Stats(CogU, name="Statistics", hidden=True):
         await ctx.reply(embed=e)
 
     async def send_guild_stats(self, e: discord.Embed, guild: discord.Guild):
-        e.add_field(name='Name', value=guild.name)
-        e.add_field(name='ID', value=guild.id)
-        e.add_field(name='Shard ID', value=guild.shard_id or 'N/A')
-        if not guild.owner and guild.owner_id:
-            try:
-                owner = await self.bot.getorfetch_user(guild.owner_id, None)
-            except discord.NotFound:
-                owner = None
-        else:
-            owner = guild.owner
+        # get the DB version of the guild name if we don't have it cached
+        guild_id = guild.id
+
+        # if e.color == danny_green():
+        #     is_join = True
+        # else:
+        #     is_join = False
         
-        e.add_field(name='Owner', value=f'{owner} (ID: `{guild.owner_id}`)')
+        # is_leave = not is_join # check if we are joining/leaving the guild
+
+        guild_name = guild.name
+        guild_shard_id = guild.shard_id
+        guild_owner_id = guild.owner_id
+        guild_owner = guild.owner
+        guild_owner_name = str(guild_owner) if guild_owner else None
+        guild_member_count = guild.member_count or len(guild.members)
+        guild_icon_url = guild.icon.url if guild.icon else None
+        guild_me_joined_at = guild.me.joined_at if guild.me else None
+        
+        try:
+            fake_guild = await DiscordGuilds.filter(guild_id=guild.id).first().prefetch_related('owner')
+        except Exception:
+            fake_guild = None
+
+        if fake_guild:
+
+            # apparently on_guild_remove can be called for TOS tempbanned guilds, check if we are in the guild via DB before calling it
+            if guild.unavailable:
+                if fake_guild.bot_joined_at == getattr(guild.me, 'joined_at', None):
+                    log.warning(f'Not sending guild leave webhook for guild {guild.id} as DB shows different information than cache (probably a guild tempban)')
+                    return # shows that we left this guild already (no join date)
+
+            if not guild_name:
+                guild_name = fake_guild.name
+            if not guild_shard_id:
+                guild_shard_id = fake_guild.shard_id
+
+            if not guild_owner_id:
+                guild_owner_id = fake_guild.guild_owner_id
+            
+            if not guild_owner_name:
+                if fake_guild.owner:
+                    if fake_guild.owner.global_name:
+                        guild_owner_name = str(fake_guild.owner.global_name)
+                    elif int(fake_guild.owner.discriminator) != 0:
+                        guild_owner_name = f'{fake_guild.owner.name}#{fake_guild.owner.discriminator}'
+                    else:
+                        guild_owner_name = str(fake_guild.owner.name) if fake_guild.owner.name else None
+
+            if not guild_member_count:
+                guild_member_count = fake_guild.member_count or fake_guild.approximate_member_count
+
+            if not guild_icon_url:
+                guild_icon_url = fake_guild.icon_url
+            
+            if not guild_me_joined_at:
+                guild_me_joined_at = fake_guild.bot_joined_at                
+
+        if guild_owner_id and not guild_owner:
+            try:
+                guild_owner = await self.bot.get_or_fetch_user(guild_owner_id, guild)
+            except Exception:
+                try:
+                    guild_owner = await self.bot.fetch_user(guild_owner_id)
+                except Exception:
+                    guild_owner = None
+
+        e.add_field(name='Name', value=guild_name)
+        e.add_field(name='ID', value=guild_id)
+        e.add_field(name='Shard ID', value=guild_shard_id or 'N/A')
+
+        e.add_field(name='Owner', value=f'{guild_owner} (ID: `{guild_owner_id}`)')
 
         bots = sum(m.bot for m in guild.members)
-        total = guild.member_count or 1
+        total = guild_member_count or 1
         e.add_field(name='Members', value=str(intcomma(total)))
         e.add_field(name='Bots', value=f'{intcomma(bots)} ({bots/total:.2%})')
 
-        if guild.icon:
-            e.set_thumbnail(url=guild.icon.url)
+        if guild_icon_url:
+            e.set_thumbnail(url=guild_icon_url)
 
-        if guild.me:
-            e.timestamp = guild.me.joined_at
-        
+        if guild_me_joined_at:
+            e.timestamp = guild_me_joined_at
+
         e.set_footer(text=f'Server count is now {intcomma(len(self.bot.guilds))}.',icon_url=self.bot.user.display_avatar.url)
         
         await self.webhook.send(embed=e)
@@ -1299,7 +1429,7 @@ class Stats(CogU, name="Statistics", hidden=True):
 
         if not isinstance(user, discord.User):
             try:
-                user_obj = await self.bot.getorfetch_user(user.id, None)
+                user_obj = await self.bot.get_or_fetch_user(user.id, None)
             except discord.NotFound:
                 user_obj = user
         else:
@@ -1504,7 +1634,12 @@ class Stats(CogU, name="Statistics", hidden=True):
         description.append(f'Commands Waiting: `{command_waiters}`, Batch Locked: {emojidict.get(is_locked)}')
 
         memory_usage = self.process.memory_full_info().uss / 1024**2
-        cpu_usage = self.process.cpu_percent() / psutil.cpu_count()
+        #cpu_usage = self.process.cpu_percent() / psutil.cpu_count()
+        cpu_count = psutil.cpu_count()
+        assert cpu_count  # valid here
+
+        cpu_usage = self.process.cpu_percent() / cpu_count
+
         embed.add_field(name='Process', value=f'`{memory_usage:.2f}` MiB\n`{cpu_usage:.2f}`% CPU', inline=False)
 
         global_rate_limit = not self.bot.http._global_over.is_set()
@@ -2067,7 +2202,7 @@ class Stats(CogU, name="Statistics", hidden=True):
     #         return
         
     #     for auth in unlogged_additions:
-    #         user = await self.bot.getorfetch_user(auth.user_id, None)
+    #         user = await self.bot.get_or_fetch_user(auth.user_id, None)
 
     #         if "applications.commands" in auth.scopes:
     #             if not auth.is_removal:
@@ -2082,9 +2217,6 @@ class Stats(CogU, name="Statistics", hidden=True):
     #                 await self.on_user_deauthorization(user)
     #         auth.has_been_logged = True
     #         await auth.save()
-
-
-
 
 old_on_error = commands.AutoShardedBot.on_error
 
