@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from cogs.models import WikiPages
+#from cogs.models import WikiPages
 from src.cache import Cache
 from src.config import CLEAR_CACHE_HOURS, OLD_WIKI_REDIRECT, WIKITEXT_LINKING
 from src.embed import EmbedBuilder
