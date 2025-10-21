@@ -4,7 +4,7 @@ import datetime
 import logging
 import re
 import time
-from typing import Optional
+from typing import Optional, final
 import urllib.parse
 
 import aiohttp
@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from cogs.models import WikiPages
 from src.cache import Cache
 from src.config import CLEAR_CACHE_HOURS, OLD_WIKI_REDIRECT, WIKITEXT_LINKING
 from src.embed import EmbedBuilder
@@ -23,13 +24,15 @@ from utils import (
     CogU,
     ContextU,
     Cooldown,
+    CustomBaseView,
     GUILDS,
+    USER_AGENT,
+    dchyperlink,
     generic_autocomplete,
     logger,
     logger_computer,
-    dchyperlink,
-    CustomBaseView
 )
+from utils.src.kens_utils.methods import makeembed_failedaction
 
 allpages = []
 
@@ -130,32 +133,100 @@ class CommandsCog(CogU, name='Farm Computer'):
                     break
         
         proper_query = urllib.parse.quote(proper_query.replace(" ","_"))
-
-        emb = await self.search(proper_query,cache=self.cache)
+        try:
+            emb = await self.search(proper_query,cache=self.cache)
+            assert emb is not None
+            found = True
+        except Exception as e:
+            # not found
+            logger_computer.error(f"Error searching wiki for {proper_query}: {e}")
+            emb = makeembed_failedaction(description=f"No valid page found on the {dchyperlink('Stardew Valley Wiki', 'https://stardewvalleywiki.com')} for query `{query}`.\nTry again with another search term.")
+            found = False
         
-        view = CustomBaseView(timeout=None)
-        view.add_item(
-            discord.ui.Button(style=discord.ButtonStyle.link, label="View on Stardew Valley Wiki", url=emb.url)
-        )
-        view.message =  await ctx.reply(embed=emb, view=view)
+        if emb.url:
+            emb_url = emb.url
+            label = "View on Stardew Valley Wiki"
+        else:
+            label = "Stardew Valley Wiki"
+            emb_url = "https://stardewvalleywiki.com/"
+            emb.url = emb_url # not found, default to main page
+
+        
+        if emb.url:
+            view = CustomBaseView(timeout=None)
+
+            view.add_item(
+                discord.ui.Button(style=discord.ButtonStyle.link, label=label, url=emb.url)
+            )
+            view.message =  await ctx.reply(embed=emb, view=view)
+        else:
+            view = None
+            await ctx.reply(embed=emb)
 
         end = time.time()
-        logger_computer.info(f"Looked up {str(emb.title)[:str(emb.title).find('-')-1]} for {ctx.author} in {end-start} seconds.")
+        if found:
+            logger_computer.info(f"Looked up {str(emb.title)[:str(emb.title).find('-')-1]} for {ctx.author} in {end-start} seconds.")
+        else:
+            logger_computer.info(f"Failed to find wiki page for query '{query}' for {ctx.author} in {end-start} seconds.")
 
     async def getallpages(self, sites: list=[], prev=None, first_iteration: bool=True):
         logger_computer.debug('running')
         r = None
         if prev in self.prevs: 
             return None
-        
+
+        # headers = {
+        #     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        #     "Accept-Encoding": "gzip, deflate, br, zstd",
+        #     "Accept-Language": "en-US,en;q=0.9,fr;q=0.8,es;q=0.7",
+        #     "Cache-Control": "no-cache",
+        #     #"Cookie": "_ga=GA1.1.1388078582.1753660642; _ga_1S37VCXXZ9=GS2.1.s1753660642$o1$g0$t1753660857$j60$l0$h0",
+        #     "Pragma": "no-cache",
+        #     "Priority": "u=0, i",
+        #     "Sec-Ch-Ua": '"Not)A;Brand";v="8", "Chromium";v="138", "Opera GX";v="122"',
+        #     "Sec-Ch-Ua-Mobile": "?0",
+        #     "Sec-Ch-Ua-Platform": '"macOS"',
+        #     "Sec-Fetch-Dest": "document",
+        #     "Sec-Fetch-Mode": "navigate",
+        #     "Sec-Fetch-Site": "none",
+        #     "Sec-Fetch-User": "?1",
+        #     "Upgrade-Insecure-Requests": "1",
+        #     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X   10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 OPR/122.0.0.0 (Edition std-1)"
+        # }
+        session = aiohttp.ClientSession()
+
+        request_kwargs = {
+            "headers": {"User-Agent": USER_AGENT},
+            #"proxy": f"http://{PROXY_URL}",
+            #"timeout": aiohttp.ClientTimeout(total=30),
+        }
         if first_iteration:
-            r = await self.session.get('https://stardewvalleywiki.com/Special:AllPages?from=&to=z&namespace=0&hideredirects=1')
+            try:
+                r = await session.get('https://stardewvalleywiki.com/Special:AllPages?from=&to=z&namespace=0&hideredirects=1', 
+                **request_kwargs)
+                #headers=headers)
+            except Exception as e:
+                #print(e)
+                logger_computer.error(f"Error fetching all pages: {e}")
+                return None
         else:
-            r = await self.session.get(prev)
+            r = await session.get(prev,**request_kwargs) #headers=headers)
         
         logger_computer.debug('responded')
 
+        #print(r.status)
+        # if not r.ok:
+        #     with open('error.html','w') as f:
+        #         try:
+        #             content = await r.content.read()
+        #         except Exception as e:
+        #             print(e)
+        #         print(str(content))
+        #         f.write(str(content))
+
         r = await r.text()
+
+        await session.close()
 
         if prev:
             logger_computer.debug("more data after this")
@@ -177,13 +248,21 @@ class CommandsCog(CogU, name='Farm Computer'):
             sites.append(found.find("a").get("href"))
 
         for next in b.find_all('a',{"title": "Special:AllPages"}):
-            if "Next page" in next.text:    
+            if "Next page" in next.text:
                 r = await self.getallpages(sites, "https://stardewvalleywiki.com"+next.get("href"), first_iteration=False)  
                 self.prevs.append("https://stardewvalleywiki.com"+next.get("href"))  
         returnv = []
         for site in sites:
             returnv.append(str(site.replace("%27","'").replace("%20"," ").replace('_'," "))[1:])
         return returnv
+
+    # async def getallpages_db(self):
+    #     # get all pages from the database
+    #     pages =  await WikiPages.filter(is_redirect=False)
+    #     returnv = []
+    #     for page in pages:
+    #         returnv.append(str(page.url).replace('%27',"'" ).replace('%20',' ').replace('_',' '))
+    #     return returnv
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -222,28 +301,31 @@ class CommandsCog(CogU, name='Farm Computer'):
         r = None
         status = None
         full_href = None
+        redir = None
+        final_request_obj = None
 
         try:
             url = f"https://stardewvalleywiki.com/{query}"
-            r = await self.session.get(url)
+            r = await self.session.get(url, headers={"User-Agent": USER_AGENT})
             if r.status > 350:
                 # logger_computer.debug(r.status)
                 raise Exception()
             status = r.status
             full_href = str(r._real_url)
             soup = bs4.BeautifulSoup(await r.text(), "html.parser")
+            final_request_obj = r
         except Exception:
             # logger_computer.debug(r.status)
             url = f"https://stardewvalleywiki.com/mediawiki/index.php?search={encoded}"
 
-            res = await self.session.get(url)
+            res = await self.session.get(url, headers={"User-Agent": USER_AGENT})
+            final_request_obj = res
 
             soup = bs4.BeautifulSoup(await res.text(), "html.parser")
 
             # logger.info(f'Got status code: {res.status_code}')
             # logger.info(f'Got url: {res.url}')
 
-            redir = False
             if res.status in [301, 302, 304]:
                 try:
                     redir = soup.find_all("meta", {"property": "og:url"})[0]["content"]
@@ -258,10 +340,37 @@ class CommandsCog(CogU, name='Farm Computer'):
                 href = li.find_all("a")[0]["href"]
                 full_href = f"https://stardewvalleywiki.com{href}"
 
-            if full_href != url and full_href != urllib.parse.urlparse(url).path:
-                r = await self.session.get(full_href)
-                status = r.status
-
+            if full_href and full_href != url and full_href != urllib.parse.urlparse(url).path:
+                try:
+                    r = await self.session.get(full_href, headers={"User-Agent": USER_AGENT})
+                    status = r.status
+                    final_request_obj = r
+                except Exception as e:
+                    pass
+            else:
+                raise Exception("No valid page found")
+        # store in db then cache
+        # if redir:
+        #     await WikiPages.update_or_create(
+        #         url=final_request_obj._real_url,
+        #         defaults={
+        #             'query': query,
+        #             'content': await final_request_obj.text(),
+        #             'is_redirect': True,
+        #             'redirect_target_url': redir,
+        #             'last_fetched_at': discord.utils.utcnow(),
+        #         }
+        #     )
+        # else:
+        # await WikiPages.update_or_create(
+        #     url=final_request_obj._real_url,
+        #     defaults={
+        #         'query': query,
+        #         'content': await final_request_obj.text(),
+        #         # 'is_redirect': bool(redir),
+        #         # 'redirect_target_url': redir,
+        #     }
+        # )
         if status == 200:
             # return parse(full_href)
             return await cache.get(full_href)
@@ -292,7 +401,7 @@ class CommandsCog(CogU, name='Farm Computer'):
 
             return help().build() if build else help()
 
-        html = await (await self.session.get(url)).text()
+        html = await (await self.session.get(url, headers={"User-Agent": USER_AGENT})).text()
         soup = bs4.BeautifulSoup(html, "html.parser")
 
         # find the first <img> that does NOT have a srcset attr
@@ -520,7 +629,7 @@ class CommandsCog(CogU, name='Farm Computer'):
             links = re.findall(link_regex, content)
             if links and not re.findall(bad_link_regex, content):
                 for link in links:
-                    r = await self.session.get(f'https://stardewvalleywiki.com/{link}')
+                    r = await self.session.get(f'https://stardewvalleywiki.com/{link}', headers={"User-Agent": USER_AGENT})
 
                     if r.status in [301, 302, 304, 400, 404]:
                         return
