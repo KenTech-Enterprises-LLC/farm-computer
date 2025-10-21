@@ -2,12 +2,13 @@ aerich
 aiohttp
 asyncpg
 BeautifulSoup4
+brotlipy # used to get content for some wiki pages
 colorama
+dateparser
 discord.py @ git+https://github.com/Rapptz/discord.py
 jishaku
 psutil
-python-environ
 pygit2==1.14.1
-dateparser
+python-environ
 PyYAML==6.0.1
 tortoise-orm
