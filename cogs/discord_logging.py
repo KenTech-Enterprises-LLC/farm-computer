@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import environ
 from tortoise import Tortoise
-from tortoise.exceptions import TransactionManagementError
+from tortoise.exceptions import TransactionManagementError, MultipleObjectsReturned
 
 from cogs.models import DiscordChannels, DiscordGuilds, DiscordUsers
 from utils import BotU, CogU
@@ -80,7 +80,7 @@ class DiscordLogging(CogU, hidden=True):
     async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
         try:
             await DiscordChannels.from_channel(after, self.bot)
-        except TransactionManagementError:
+        except (TransactionManagementError, MultipleObjectsReturned):
             pass
     
     @commands.Cog.listener()
